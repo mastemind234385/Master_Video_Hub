@@ -1,6 +1,8 @@
 import os
 import asyncio
 import time
+from web import run_web
+import threading
 
 from dotenv import load_dotenv
 
@@ -719,7 +721,10 @@ def main():
     app.add_error_handler(
         error_handler
     )
-
+    threading.Thread(
+        target=run_web,
+        daemon=True
+    ).start()
     print(
         "🤖 Video Downloader Bot is running..."
     )
