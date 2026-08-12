@@ -1,9 +1,9 @@
 import os
 import asyncio
-import time
-
+import threading
 
 from dotenv import load_dotenv
+from flask import Flask
 
 from telegram import (
     Update,
@@ -38,6 +38,34 @@ BRAND = "Powered by MASTERMIND"
 
 
 # =========================================================
+# FLASK HEALTH SERVER
+# =========================================================
+
+web_app = Flask(__name__)
+
+
+@web_app.route("/")
+def home():
+    return "Master Video Hub Bot is running!"
+
+
+@web_app.route("/health")
+def health():
+    return "OK"
+
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+
+    web_app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False,
+        use_reloader=False,
+    )
+
+
+# =========================================================
 # BRANDING
 # =========================================================
 
@@ -54,14 +82,17 @@ def format_bytes(value):
     if not value:
         return "0 B"
 
-    value = float(value)
+    try:
+        value = float(value)
+    except Exception:
+        return "0 B"
 
     units = [
         "B",
         "KB",
         "MB",
         "GB",
-        "TB"
+        "TB",
     ]
 
     for unit in units:
@@ -111,8 +142,11 @@ async def start(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
+    if not update.message:
+        return
+
     text = (
-        "🎬 <b>Video Downloader Bot</b>\n\n"
+        "🎬 <b>Master Video Hub</b>\n\n"
         "🔗 একটি supported video URL পাঠাও।\n\n"
         "তারপর তোমার পছন্দের quality নির্বাচন করো।"
     )
@@ -131,6 +165,9 @@ async def help_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+
+    if not update.message:
+        return
 
     text = (
         "📖 <b>How To Use</b>\n\n"
@@ -331,19 +368,15 @@ async def quality_callback(
         "percent": 0,
         "downloaded": 0,
         "total": 0,
-        "speed": "N/A",
-        "eta": "N/A",
+        "speed": None,
+        "eta": None,
     }
-
-    last_edit = 0
 
     # =====================================================
     # PROGRESS CALLBACK
     # =====================================================
 
     def progress_callback(data):
-
-        nonlocal progress_data
 
         if data.get("status") != "downloading":
             return
@@ -358,23 +391,18 @@ async def quality_callback(
         )
 
         if not total:
-
             total = data.get(
                 "total_bytes_estimate"
             )
 
         if total:
-
             percent = (
-                downloaded /
-                total
+                downloaded / total
             ) * 100
-
         else:
-
             percent = 0
 
-        progress_data = {
+        progress_data.update({
 
             "percent": percent,
 
@@ -389,15 +417,13 @@ async def quality_callback(
             "eta": data.get(
                 "eta"
             ),
-        }
+        })
 
     # =====================================================
     # LIVE PROGRESS TASK
     # =====================================================
 
     async def update_progress():
-
-        nonlocal last_edit
 
         while True:
 
@@ -424,6 +450,7 @@ async def quality_callback(
             ]
 
             # Speed
+
             if speed:
 
                 speed_text = (
@@ -435,17 +462,20 @@ async def quality_callback(
                 speed_text = "N/A"
 
             # ETA
+
             if eta is not None:
 
-                eta_text = (
-                    f"{int(eta)}s"
-                )
+                try:
+                    eta_text = f"{int(eta)}s"
+                except Exception:
+                    eta_text = "N/A"
 
             else:
 
                 eta_text = "N/A"
 
             # Size
+
             if total:
 
                 size_text = (
@@ -455,8 +485,8 @@ async def quality_callback(
 
             else:
 
-                size_text = (
-                    format_bytes(downloaded)
+                size_text = format_bytes(
+                    downloaded
                 )
 
             bar = progress_bar(
@@ -503,12 +533,11 @@ async def quality_callback(
             progress_callback
         )
 
-        # Stop progress
-        progress_task.cancel()
+        # -------------------------------------------------
+        # STOP PROGRESS
+        # -------------------------------------------------
 
-        # -------------------------------------------------
-        # UPLOAD MESSAGE
-        # -------------------------------------------------
+        progress_task.cancel()
 
         try:
 
@@ -536,6 +565,7 @@ async def quality_callback(
             ) as audio:
 
                 await query.message.reply_audio(
+
                     audio=audio,
 
                     caption=branded_text(
@@ -558,6 +588,7 @@ async def quality_callback(
             ) as video:
 
                 await query.message.reply_video(
+
                     video=video,
 
                     caption=branded_text(
@@ -569,7 +600,7 @@ async def quality_callback(
                 )
 
         # -------------------------------------------------
-        # DELETE STATUS
+        # DELETE STATUS MESSAGE
         # -------------------------------------------------
 
         try:
@@ -609,6 +640,11 @@ async def quality_callback(
     except Exception as e:
 
         progress_task.cancel()
+
+        print(
+            "DOWNLOAD ERROR:",
+            repr(e)
+        )
 
         try:
 
@@ -661,8 +697,80 @@ async def error_handler(
 
     print(
         "BOT ERROR:",
-        context.error
+        repr(context.error)
     )
+
+
+# =========================================================
+# CREATE BOT
+# =========================================================
+
+def create_bot():
+
+    if not BOT_TOKEN:
+
+        raise ValueError(
+            "BOT_TOKEN পাওয়া যায়নি। "
+            "Render Environment Variables-এ "
+            "BOT_TOKEN সেট করো।"
+        )
+
+    application = (
+        Application
+        .builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    # -----------------------------------------------------
+    # COMMANDS
+    # -----------------------------------------------------
+
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "help",
+            help_command
+        )
+    )
+
+    # -----------------------------------------------------
+    # URL HANDLER
+    # -----------------------------------------------------
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_url
+        )
+    )
+
+    # -----------------------------------------------------
+    # BUTTONS
+    # -----------------------------------------------------
+
+    application.add_handler(
+        CallbackQueryHandler(
+            quality_callback,
+            pattern=r"^(quality_|cancel_download)"
+        )
+    )
+
+    # -----------------------------------------------------
+    # ERROR HANDLER
+    # -----------------------------------------------------
+
+    application.add_error_handler(
+        error_handler
+    )
+
+    return application
 
 
 # =========================================================
@@ -671,56 +779,27 @@ async def error_handler(
 
 def main():
 
-    if not BOT_TOKEN:
+    # -----------------------------------------------------
+    # START WEB SERVER
+    # -----------------------------------------------------
 
-        raise ValueError(
-            "BOT_TOKEN পাওয়া যায়নি। "
-            ".env file চেক করো।"
-        )
-
-    app = (
-        Application
-        .builder()
-        .token(BOT_TOKEN)
-        .build()
+    web_thread = threading.Thread(
+        target=run_web,
+        daemon=True
     )
 
-    # Commands
-    app.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
+    web_thread.start()
+
+    print(
+        "🌐 Web server started"
     )
 
-    app.add_handler(
-        CommandHandler(
-            "help",
-            help_command
-        )
-    )
+    # -----------------------------------------------------
+    # START TELEGRAM BOT
+    # -----------------------------------------------------
 
-    # URL
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            handle_url
-        )
-    )
+    application = create_bot()
 
-    # Buttons
-    app.add_handler(
-        CallbackQueryHandler(
-            quality_callback,
-            pattern=r"^(quality_|cancel_download)"
-        )
-    )
-
-    # Errors
-    app.add_error_handler(
-        error_handler
-    )
-    
     print(
         "🤖 Video Downloader Bot is running..."
     )
@@ -729,7 +808,9 @@ def main():
         "🚀 Powered by MASTERMIND"
     )
 
-    app.run_polling()
+    application.run_polling(
+        drop_pending_updates=True
+    )
 
 
 # =========================================================
@@ -737,4 +818,5 @@ def main():
 # =========================================================
 
 if __name__ == "__main__":
+
     main()
